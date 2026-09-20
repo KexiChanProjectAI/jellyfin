@@ -104,6 +104,27 @@ public sealed class SqliteDatabaseProvider : IJellyfinDatabaseProvider
     }
 
     /// <inheritdoc/>
+    public DatabaseErrorKind ClassifyException(Exception exception)
+    {
+        for (var current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is SqliteException sqlite)
+            {
+                return sqlite.SqliteErrorCode switch
+                {
+                    // SQLITE_BUSY and SQLITE_LOCKED. Another writer holds the database, so the same
+                    // work can succeed on a retry.
+                    5 or 6 => DatabaseErrorKind.TransientLock,
+                    19 => DatabaseErrorKind.UniqueViolation,
+                    _ => DatabaseErrorKind.Unknown
+                };
+            }
+        }
+
+        return DatabaseErrorKind.Unknown;
+    }
+
+    /// <inheritdoc/>
     public Task RunScheduledOptimisation(CancellationToken cancellationToken)
     {
         return OptimizeAsync(cancellationToken);

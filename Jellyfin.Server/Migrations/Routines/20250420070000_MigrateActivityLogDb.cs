@@ -83,9 +83,14 @@ namespace Jellyfin.Server.Migrations.Routines
                 // Make sure that the database is empty in case of failed migration due to power outages, etc.
                 dbContext.ActivityLogs.RemoveRange(dbContext.ActivityLogs);
                 dbContext.SaveChanges();
-                // Reset the autoincrement counter
-                dbContext.Database.ExecuteSqlRaw("UPDATE sqlite_sequence SET seq = 0 WHERE name = 'ActivityLog';");
-                dbContext.SaveChanges();
+                // Reset the autoincrement counter. sqlite_sequence only exists on SQLite; on any
+                // other provider this routine is either seeded as applied on a fresh install or its
+                // history row was carried over, so reaching here at all means the target is SQLite.
+                if (dbContext.Database.IsSqlite())
+                {
+                    dbContext.Database.ExecuteSqlRaw("UPDATE sqlite_sequence SET seq = 0 WHERE name = 'ActivityLog';");
+                    dbContext.SaveChanges();
+                }
 
                 var newEntries = new List<ActivityLog>();
 

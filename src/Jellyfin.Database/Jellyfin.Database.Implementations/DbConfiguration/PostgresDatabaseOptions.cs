@@ -125,5 +125,7 @@ public class PostgresDatabaseOptions
     /// <summary>
     /// Gets or sets additional Npgsql connection string keywords, applied verbatim.
     /// </summary>
+#pragma warning disable CA2227 // XmlSerializer needs the setter to deserialise the collection.
     public Collection<CustomDatabaseOption> AdditionalOptions { get; set; } = [];
+#pragma warning restore CA2227
 }

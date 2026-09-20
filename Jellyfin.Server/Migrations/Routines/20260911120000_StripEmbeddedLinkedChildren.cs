@@ -26,6 +26,14 @@ internal class StripEmbeddedLinkedChildren : IDatabaseMigrationRoutine
     {
         using var context = _dbProvider.CreateDbContext();
 
+        if (!context.Database.IsSqlite())
+        {
+            // json_remove and json_valid are SQLite's spelling. Any other provider only reaches this
+            // routine with an empty database, where there is nothing to strip.
+            _logger.LogDebug("Skipping the embedded linked children cleanup: it only applies to SQLite.");
+            return;
+        }
+
         // json_valid guards the rare malformed blob: json_remove would abort the statement on it,
         // and one bad row must not cost every other row the fix.
         var updated = context.Database.ExecuteSqlRaw(

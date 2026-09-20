@@ -43,3 +43,71 @@ jobs:
 
       # TODO - which action / tool to use to publish code coverage results?
       # - name: Publish code coverage results
+
+  run-tests-postgres:
+    name: "PostgreSQL ${{ matrix.postgres }}"
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # The full supported range on master; the ends of it on a pull request, which catches a
+        # version specific break without paying for four runs on every push.
+        postgres: ${{ github.event_name == 'pull_request' && fromJSON('[15, 18]') || fromJSON('[15, 16, 17, 18]') }}
+      fail-fast: false
+
+    services:
+      postgres:
+        image: "postgres:${{ matrix.postgres }}"
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      # A timezone that is neither UTC nor the server's, with daylight saving, so that any DateTime
+      # handling that only works in UTC fails here rather than for a user.
+      TZ: Australia/Melbourne
+      PGPASSWORD: postgres
+      # Skipping is how these tests behave without a server, so turn that into a failure here: a
+      # misconfigured runner must not report success by skipping everything.
+      JELLYFIN_POSTGRES_TEST_REQUIRED: "1"
+      JELLYFIN_POSTGRES_TEST_CONNECTION: "Host=localhost;Port=5432;Username=jellyfin_test;Password=jellyfin_test;Database=postgres"
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: ${{ env.SDK_VERSION }}
+
+      - name: Create the test roles
+        # Not a superuser: the provider has to work for an ordinary owner. CREATEDB gives each test a
+        # database of its own, CREATEROLE lets the backup tests build a role without CREATEDB to
+        # exercise the pg_dump fallback.
+        run: >
+          psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1
+          -c "CREATE ROLE jellyfin_test LOGIN CREATEDB CREATEROLE PASSWORD 'jellyfin_test';"
+
+      - name: Install the matching client tools
+        # The pg_dump backup strategy requires a client matching the server's major version, and the
+        # runner image ships whichever version it ships.
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
+            https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y "postgresql-client-${{ matrix.postgres }}"
+
+      - name: Run the data layer tests against PostgreSQL
+        run: >
+          dotnet test tests/Jellyfin.Server.Implementations.Tests
+          --configuration Release
+          --filter "FullyQualifiedName~Postgres"
+          --verbosity minimal

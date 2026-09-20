@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
@@ -121,6 +122,20 @@ public class BackupService : IBackupService
             if (!TestBackupVersionCompatibility(manifest.BackupEngineVersion))
             {
                 throw new NotSupportedException($"The loaded archive '{archivePath}' is made for a newer version of Jellyfin ({manifest.ServerVersion}) and cannot be loaded in this version.");
+            }
+
+            // Restoring replaces the migration history wholesale, and each provider numbers its
+            // schema migrations differently. Letting an archive from another provider through would
+            // leave the database claiming migrations that never ran against it, which the next start
+            // then tries to apply on top of an existing schema.
+            var currentProvider = GetDatabaseProviderKey();
+            if (manifest.Options.Database
+                && manifest.DatabaseProviderType is not null
+                && !string.Equals(manifest.DatabaseProviderType, currentProvider, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new NotSupportedException(
+                    $"The loaded archive '{archivePath}' was taken from a '{manifest.DatabaseProviderType}' database, but this "
+                    + $"server uses '{currentProvider}'. Restore it on a server using the original database type.");
             }
 
             void CopyDirectory(string source, string target, string[]? exclude = null)
@@ -282,6 +297,7 @@ public class BackupService : IBackupService
             ServerVersion = _applicationHost.ApplicationVersion,
             DatabaseTables = null!,
             BackupEngineVersion = _backupEngineVersion,
+            DatabaseProviderType = GetDatabaseProviderKey(),
             Options = Map(backupOptions)
         };
 
@@ -608,4 +624,12 @@ public class BackupService : IBackupService
     /// <returns>The normalized path. </returns>
     private static string NormalizePathSeparator(string path)
         => path.Replace('\\', '/');
+
+    /// <summary>
+    /// Returns the key of the database provider in use.
+    /// </summary>
+    private string GetDatabaseProviderKey()
+        => _jellyfinDatabaseProvider.GetType()
+            .GetCustomAttribute<JellyfinDatabaseProviderKeyAttribute>()?.DatabaseProviderKey
+            ?? _jellyfinDatabaseProvider.GetType().Name;
 }
