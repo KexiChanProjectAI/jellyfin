@@ -12,6 +12,7 @@ using Emby.Server.Implementations;
 using Emby.Server.Implementations.Configuration;
 using Emby.Server.Implementations.Serialization;
 using Jellyfin.Database.Implementations;
+using Jellyfin.Database.Implementations.DbConfiguration;
 using Jellyfin.Server.Extensions;
 using Jellyfin.Server.Helpers;
 using Jellyfin.Server.Implementations.DatabaseConfiguration;
@@ -140,7 +141,25 @@ namespace Jellyfin.Server
             StartupHelpers.PerformStaticInitialization();
 
             SetupServer.ReportActivity(StartupActivity.Initializing);
-            await ApplyStartupMigrationAsync(appPaths, startupConfig, options).ConfigureAwait(false);
+            try
+            {
+                await ApplyStartupMigrationAsync(appPaths, startupConfig, options).ConfigureAwait(false);
+            }
+            catch (DatabaseProviderStartupException ex)
+            {
+                // The message is written for the operator and says what to change, so print it on its
+                // own. A stack trace here would only bury it.
+                _logger.LogCritical("{Message}", ex.Message);
+                if (ex.InnerException is not null)
+                {
+                    _logger.LogDebug(ex.InnerException, "The underlying database failure");
+                }
+
+                Environment.ExitCode = 1;
+                await _setupServer.StopAsync().ConfigureAwait(false);
+                _setupServer.Dispose();
+                return;
+            }
 
             do
             {
@@ -303,11 +322,25 @@ namespace Jellyfin.Server
                 .AddJellyfinDbContext(startupConfigurationManager, startupConfig)
                 .AddSingleton<IApplicationPaths>(appPaths)
                 .AddSingleton<ServerApplicationPaths>(appPaths)
+                // A provider that reads connection settings from the environment needs the startup
+                // configuration, which this throwaway collection does not otherwise carry.
+                .AddSingleton(startupConfig)
                 .RegisterStartupLogger();
 
             var startupService = migrationStartupServiceProvider.BuildServiceProvider();
 
             PrepareDatabaseProvider(startupService);
+
+            // Before anything migrates: prove the database is reachable and usable, so a
+            // misconfiguration is reported as such rather than as a failure partway through creating
+            // the schema.
+            await startupService.GetRequiredService<IJellyfinDatabaseProvider>()
+                .EnsureDatabaseReadyAsync(CancellationToken.None)
+                .ConfigureAwait(false);
+
+            // The chosen provider is only known to work now, so this is where a first run commits to
+            // it. AddJellyfinDbContext deliberately leaves the default unpersisted until this point.
+            PersistDatabaseConfiguration(startupConfigurationManager);
 
             var jellyfinMigrationService = ActivatorUtilities.CreateInstance<JellyfinMigrationService>(startupService);
             await jellyfinMigrationService.CheckFirstTimeRunOrMigration(appPaths, startupOptions).ConfigureAwait(false);
@@ -394,6 +427,31 @@ namespace Jellyfin.Server
             var factory = services.GetRequiredService<IDbContextFactory<JellyfinDbContext>>();
             var provider = services.GetRequiredService<IJellyfinDatabaseProvider>();
             provider.DbContextFactory = factory;
+        }
+
+        /// <summary>
+        /// Writes the database choice out, once it is known to work.
+        /// </summary>
+        /// <remarks>
+        /// A first run that defaults to PostgreSQL leaves database.xml unwritten until here, so that
+        /// a server which cannot reach its database can still be pointed at SQLite on the next start
+        /// rather than needing the file edited by hand.
+        /// </remarks>
+        private static void PersistDatabaseConfiguration(ServerConfigurationManager configurationManager)
+        {
+            var configuration = configurationManager.GetConfiguration<DatabaseConfigurationOptions>("database");
+            if (configuration?.DatabaseType is not null)
+            {
+                return;
+            }
+
+            configurationManager.SaveConfiguration(
+                "database",
+                new DatabaseConfigurationOptions
+                {
+                    DatabaseType = ServiceCollectionExtensions.DefaultDatabaseProviderKey,
+                    LockingBehavior = DatabaseLockingBehaviorTypes.NoLock
+                });
         }
     }
 }

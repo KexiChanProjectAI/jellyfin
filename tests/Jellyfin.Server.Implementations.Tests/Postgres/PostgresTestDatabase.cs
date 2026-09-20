@@ -144,17 +144,6 @@ public sealed class PostgresTestDatabase : IAsyncDisposable
     }
 
     /// <summary>
-    /// Creates a provider bound to this database.
-    /// </summary>
-    /// <returns>The provider, already initialised.</returns>
-    public PostgresDatabaseProvider CreateProvider()
-    {
-        var (options, provider) = _shared.Value;
-        provider.DbContextFactory = new PostgresTestDbContextFactory(options, provider);
-        return provider;
-    }
-
-    /// <summary>
     /// Creates a context against this database.
     /// </summary>
     /// <returns>The context.</returns>
@@ -166,6 +155,127 @@ public sealed class PostgresTestDatabase : IAsyncDisposable
             NullLogger<JellyfinDbContext>.Instance,
             provider,
             new NoLockBehavior(NullLogger<NoLockBehavior>.Instance));
+    }
+
+    /// <summary>
+    /// Creates a provider bound to this database, optionally as another role or with other paths.
+    /// </summary>
+    /// <param name="options">Settings to use instead of this database's own.</param>
+    /// <param name="applicationPaths">Paths to use instead of the stub.</param>
+    /// <returns>The provider, already initialised.</returns>
+    public PostgresDatabaseProvider CreateProvider(PostgresDatabaseOptions? options = null, IApplicationPaths? applicationPaths = null)
+    {
+        if (options is null && applicationPaths is null)
+        {
+            var (sharedOptions, sharedProvider) = _shared.Value;
+            sharedProvider.DbContextFactory = new PostgresTestDbContextFactory(sharedOptions, sharedProvider);
+            return sharedProvider;
+        }
+
+        var provider = new PostgresDatabaseProvider(
+            applicationPaths ?? ApplicationPaths,
+            NullLogger<PostgresDatabaseProvider>.Instance);
+        var builder = new DbContextOptionsBuilder<JellyfinDbContext>();
+        provider.Initialise(
+            builder,
+            new DatabaseConfigurationOptions { DatabaseType = "Jellyfin-PgSql", PostgreSql = options ?? Options });
+        provider.DbContextFactory = new PostgresTestDbContextFactory(builder.Options, provider);
+        return provider;
+    }
+
+    /// <summary>
+    /// Creates a login role without the CREATEDB privilege and grants it this database.
+    /// </summary>
+    /// <returns>Settings for that role, or null when the test role may not create roles.</returns>
+    public async Task<PostgresDatabaseOptions?> CreateRestrictedRoleAsync()
+    {
+        var roleName = "jf_r_" + Guid.NewGuid().ToString("N")[..12];
+        const string Password = "restricted";
+
+        var admin = new NpgsqlConnection(_adminConnectionString);
+        await using (admin.ConfigureAwait(false))
+        {
+            await admin.OpenAsync().ConfigureAwait(false);
+            var command = admin.CreateCommand();
+            await using (command.ConfigureAwait(false))
+            {
+#pragma warning disable CA2100 // Generated identifiers; identifiers cannot be parameters.
+                command.CommandText = FormattableString.Invariant(
+                    $"""
+                    CREATE ROLE "{roleName}" LOGIN NOCREATEDB PASSWORD '{Password}';
+                    GRANT ALL ON DATABASE "{_databaseName}" TO "{roleName}";
+                    """);
+#pragma warning restore CA2100
+                try
+                {
+                    await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+                }
+                catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.InsufficientPrivilege)
+                {
+                    return null;
+                }
+            }
+
+            // The role also has to own the schema to read every table for a dump.
+            var grant = admin.CreateCommand();
+            await using (grant.ConfigureAwait(false))
+            {
+#pragma warning disable CA2100 // Generated identifiers.
+                grant.CommandText = FormattableString.Invariant($"GRANT \"{roleName}\" TO CURRENT_USER");
+#pragma warning restore CA2100
+                await grant.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+        }
+
+        var ownership = await OpenAsync().ConfigureAwait(false);
+        await using (ownership.ConfigureAwait(false))
+        {
+            var command = ownership.CreateCommand();
+            await using (command.ConfigureAwait(false))
+            {
+#pragma warning disable CA2100 // Generated identifiers.
+                command.CommandText = FormattableString.Invariant(
+                    $"""
+                    GRANT ALL ON SCHEMA public TO "{roleName}";
+                    GRANT ALL ON ALL TABLES IN SCHEMA public TO "{roleName}";
+                    GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO "{roleName}";
+                    """);
+#pragma warning restore CA2100
+                await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+        }
+
+        return new PostgresDatabaseOptions
+        {
+            Host = Options.Host,
+            Port = Options.Port,
+            Username = roleName,
+            Password = Password,
+            Database = _databaseName,
+            MaintenanceDatabase = Options.MaintenanceDatabase
+        };
+    }
+
+    /// <summary>
+    /// Runs a scalar query against the maintenance database.
+    /// </summary>
+    /// <param name="sql">The query.</param>
+    /// <returns>The first column of the first row.</returns>
+    public async Task<object?> ScalarOnMaintenanceAsync(string sql)
+    {
+        var connection = new NpgsqlConnection(_adminConnectionString);
+        await using (connection.ConfigureAwait(false))
+        {
+            await connection.OpenAsync().ConfigureAwait(false);
+            var command = connection.CreateCommand();
+            await using (command.ConfigureAwait(false))
+            {
+#pragma warning disable CA2100 // Test-owned SQL.
+                command.CommandText = sql;
+#pragma warning restore CA2100
+                return await command.ExecuteScalarAsync().ConfigureAwait(false);
+            }
+        }
     }
 
     /// <summary>

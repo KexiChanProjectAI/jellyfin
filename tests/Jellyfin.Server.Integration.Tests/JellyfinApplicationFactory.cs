@@ -42,6 +42,23 @@ namespace Jellyfin.Server.Integration.Tests
             StartupHelpers.PerformStaticInitialization();
         }
 
+        /// <summary>
+        /// Writes a database.xml selecting the embedded database.
+        /// </summary>
+        /// <param name="appPaths">The paths of the host under test.</param>
+        private static void WriteDatabaseConfiguration(IApplicationPaths appPaths)
+        {
+            var serializer = new Emby.Server.Implementations.Serialization.MyXmlSerializer();
+            var path = Path.Combine(appPaths.ConfigurationDirectoryPath, "database.xml");
+            serializer.SerializeToFile(
+                new Jellyfin.Database.Implementations.DbConfiguration.DatabaseConfigurationOptions
+                {
+                    DatabaseType = Jellyfin.Server.Implementations.Extensions.ServiceCollectionExtensions.SqliteDatabaseProviderKey,
+                    LockingBehavior = Jellyfin.Database.Implementations.DbConfiguration.DatabaseLockingBehaviorTypes.NoLock
+                },
+                path);
+        }
+
         /// <inheritdoc/>
         protected override IHostBuilder CreateHostBuilder()
         {
@@ -72,6 +89,11 @@ namespace Jellyfin.Server.Integration.Tests
             // Create the logging config file
             // TODO: We shouldn't need to do this since we are only logging to console
             StartupHelpers.InitLoggingConfigFile(appPaths).GetAwaiter().GetResult();
+
+            // These tests run the real startup path, so they would otherwise follow the production
+            // default and demand a PostgreSQL server. Pin them to the embedded database, which needs
+            // nothing beyond the temporary directory above.
+            WriteDatabaseConfiguration(appPaths);
 
             // Create a copy of the application configuration to use for startup
             var startupConfig = Program.CreateAppConfiguration(commandLineOpts, appPaths);
