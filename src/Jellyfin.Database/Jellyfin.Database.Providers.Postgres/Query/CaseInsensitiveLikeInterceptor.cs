@@ -21,9 +21,9 @@ namespace Jellyfin.Database.Providers.Postgres.Query;
 /// </para>
 /// <para>
 /// Cost: <c>ILIKE</c> cannot use a plain b-tree index for a prefix pattern. Most of Jellyfin's
-/// patterns are <c>%term%</c>, which no b-tree serves anyway; the answer for a prefix search that
-/// matters is the <c>pg_trgm</c> index this provider installs when it is permitted to, not
-/// reverting this.
+/// patterns are <c>%term%</c>, which no b-tree serves anyway, so little is given up in practice. If
+/// a prefix search is ever shown to matter, the answer is a <c>pg_trgm</c> index on the searched
+/// columns rather than reverting this and returning fewer rows than SQLite does.
 /// </para>
 /// </remarks>
 internal sealed class CaseInsensitiveLikeInterceptor : IQueryExpressionInterceptor
