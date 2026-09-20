@@ -6,6 +6,7 @@ using System.Reflection;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.DbConfiguration;
 using Jellyfin.Database.Implementations.Locking;
+using Jellyfin.Database.Providers.Postgres;
 using Jellyfin.Database.Providers.Sqlite;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Configuration;
@@ -21,9 +22,20 @@ namespace Jellyfin.Server.Implementations.Extensions;
 /// </summary>
 public static class ServiceCollectionExtensions
 {
+    /// <summary>
+    /// The provider a fresh installation uses when nothing says otherwise.
+    /// </summary>
+    public const string DefaultDatabaseProviderKey = "Jellyfin-PgSql";
+
+    /// <summary>
+    /// The provider that needs no server of its own.
+    /// </summary>
+    public const string SqliteDatabaseProviderKey = "Jellyfin-SQLite";
+
     private static IEnumerable<Type> DatabaseProviderTypes()
     {
         yield return typeof(SqliteDatabaseProvider);
+        yield return typeof(PostgresDatabaseProvider);
     }
 
     private static IDictionary<string, JellyfinDbProviderFactory> GetSupportedDbProviders()
@@ -44,8 +56,29 @@ public static class ServiceCollectionExtensions
         return items;
     }
 
+    /// <summary>
+    /// Reports whether this data directory already holds a database from an earlier installation.
+    /// </summary>
+    /// <param name="applicationPaths">The application paths.</param>
+    /// <returns>True when an upgrade, false when a new installation.</returns>
+    /// <remarks>
+    /// jellyfin.db is the current database and library.db is the one from 10.10 and earlier, which
+    /// the startup migrations import. Either means this server has data and has to keep reading it
+    /// from SQLite.
+    /// </remarks>
+    private static bool HasExistingSqliteDatabase(IApplicationPaths applicationPaths)
+        => File.Exists(Path.Combine(applicationPaths.DataPath, "jellyfin.db"))
+            || File.Exists(Path.Combine(applicationPaths.DataPath, "library.db"));
+
     private static JellyfinDbProviderFactory? LoadDatabasePlugin(CustomDatabaseOptions customProviderOptions, IApplicationPaths applicationPaths)
     {
+        if (string.IsNullOrWhiteSpace(customProviderOptions.PluginName)
+            || string.IsNullOrWhiteSpace(customProviderOptions.PluginAssembly))
+        {
+            throw new InvalidOperationException(
+                "A PLUGIN_PROVIDER database needs both PluginName and PluginAssembly to be set in database.xml.");
+        }
+
         var plugin = Directory.EnumerateDirectories(applicationPaths.PluginsPath)
             .Where(e => Path.GetFileName(e)!.StartsWith(customProviderOptions.PluginName, StringComparison.OrdinalIgnoreCase))
             .Order()
@@ -93,13 +126,31 @@ public static class ServiceCollectionExtensions
             }
             else
             {
-                // when nothing is setup via new Database configuration, fallback to SQLite with default settings.
+                var databaseType = configuration.GetValue<string>("database:type");
+                var isNewInstallation = !HasExistingSqliteDatabase(configurationManager.ApplicationPaths);
+
+                if (string.IsNullOrWhiteSpace(databaseType))
+                {
+                    // An installation that predates database.xml has no DatabaseType but does have a
+                    // database, so a missing file cannot be read as "new installation". Only an
+                    // installation with neither gets the new default.
+                    databaseType = isNewInstallation ? DefaultDatabaseProviderKey : SqliteDatabaseProviderKey;
+                }
+
                 efCoreConfiguration = new DatabaseConfigurationOptions()
                 {
-                    DatabaseType = "Jellyfin-SQLite",
+                    DatabaseType = databaseType,
                     LockingBehavior = DatabaseLockingBehaviorTypes.NoLock
                 };
-                configurationManager.SaveConfiguration("database", efCoreConfiguration);
+
+                // A PostgreSQL choice is not written out here. It is only known to be usable once the
+                // connection has been proven, and persisting it before that would turn one failed
+                // start into a permanent one, with no way back to SQLite that does not involve
+                // editing the file by hand.
+                if (!databaseType.Equals(DefaultDatabaseProviderKey, StringComparison.OrdinalIgnoreCase))
+                {
+                    configurationManager.SaveConfiguration("database", efCoreConfiguration);
+                }
             }
         }
 
@@ -123,18 +174,21 @@ public static class ServiceCollectionExtensions
 
         serviceCollection.AddSingleton<IJellyfinDatabaseProvider>(providerFactory!);
 
-        switch (efCoreConfiguration.LockingBehavior)
+        // The provider gets to reject a behavior that is meaningless or unsafe on it, rather than
+        // leaving the operator with a setting that silently does nothing or deadlocks.
+        serviceCollection.AddSingleton<IEntityFrameworkCoreLockingBehavior>(serviceProvider =>
         {
-            case DatabaseLockingBehaviorTypes.NoLock:
-                serviceCollection.AddSingleton<IEntityFrameworkCoreLockingBehavior, NoLockBehavior>();
-                break;
-            case DatabaseLockingBehaviorTypes.Pessimistic:
-                serviceCollection.AddSingleton<IEntityFrameworkCoreLockingBehavior, PessimisticLockBehavior>();
-                break;
-            case DatabaseLockingBehaviorTypes.Optimistic:
-                serviceCollection.AddSingleton<IEntityFrameworkCoreLockingBehavior, OptimisticLockBehavior>();
-                break;
-        }
+            var provider = serviceProvider.GetRequiredService<IJellyfinDatabaseProvider>();
+            var behavior = provider.NormalizeLockingBehavior(efCoreConfiguration.LockingBehavior);
+            return behavior switch
+            {
+                DatabaseLockingBehaviorTypes.Pessimistic =>
+                    ActivatorUtilities.CreateInstance<PessimisticLockBehavior>(serviceProvider),
+                DatabaseLockingBehaviorTypes.Optimistic =>
+                    ActivatorUtilities.CreateInstance<OptimisticLockBehavior>(serviceProvider),
+                _ => ActivatorUtilities.CreateInstance<NoLockBehavior>(serviceProvider)
+            };
+        });
 
         serviceCollection.AddPooledDbContextFactory<JellyfinDbContext>((serviceProvider, opt) =>
         {

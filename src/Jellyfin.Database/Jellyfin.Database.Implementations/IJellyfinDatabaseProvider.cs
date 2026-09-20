@@ -18,6 +18,18 @@ public interface IJellyfinDatabaseProvider
     IDbContextFactory<JellyfinDbContext>? DbContextFactory { get; set; }
 
     /// <summary>
+    /// Gets a value indicating whether retrying a failed command on the same connection can succeed
+    /// while a transaction is open.
+    /// </summary>
+    /// <remarks>
+    /// SQLite leaves the transaction usable after a busy failure, so the command itself can be
+    /// retried. PostgreSQL aborts the whole transaction on a serialization failure or deadlock and
+    /// fails every following command with <c>25P02</c> until it is rolled back, so there the unit of
+    /// retry has to be the transaction, never the command.
+    /// </remarks>
+    bool CanRetryInsideTransaction => true;
+
+    /// <summary>
     /// Initialises jellyfins EFCore database access.
     /// </summary>
     /// <param name="options">The EFCore database options.</param>
@@ -84,4 +96,49 @@ public interface IJellyfinDatabaseProvider
     /// <param name="tableNames">The names of the tables to purge or null for all tables to be purged.</param>
     /// <returns>A Task.</returns>
     Task PurgeDatabase(JellyfinDbContext dbContext, IEnumerable<string>? tableNames);
+
+    /// <summary>
+    /// Classifies an exception thrown by the database into a provider independent kind.
+    /// </summary>
+    /// <param name="exception">The exception to classify, which may be a wrapper such as <see cref="DbUpdateException"/>.</param>
+    /// <returns>The kind of failure, or <see cref="DatabaseErrorKind.Unknown"/> when it carries no meaning callers can act on.</returns>
+    DatabaseErrorKind ClassifyException(Exception exception) => DatabaseErrorKind.Unknown;
+
+    /// <summary>
+    /// Returns the locking behavior to actually use, given the one the operator configured.
+    /// </summary>
+    /// <param name="requested">The configured behavior.</param>
+    /// <returns>The behavior to register.</returns>
+    /// <remarks>
+    /// A behavior can be meaningless or harmful on a given provider; the provider gets to say so
+    /// rather than leaving the operator with a setting that silently does nothing or deadlocks.
+    /// </remarks>
+    DatabaseLockingBehaviorTypes NormalizeLockingBehavior(DatabaseLockingBehaviorTypes requested) => requested;
+
+    /// <summary>
+    /// Ensures the database is reachable and usable, before any migration runs.
+    /// </summary>
+    /// <param name="cancellationToken">A cancellation token.</param>
+    /// <returns>A <see cref="Task"/> representing the asynchronous operation.</returns>
+    /// <remarks>
+    /// This is separate from <see cref="Initialise"/> because that also runs at design time, where
+    /// no server exists to connect to. Implementations should throw
+    /// <see cref="DatabaseProviderStartupException"/> with an actionable message when the database
+    /// cannot be used.
+    /// </remarks>
+    Task EnsureDatabaseReadyAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    /// <summary>
+    /// Called after rows have been imported into an empty database and before the importing
+    /// transaction commits.
+    /// </summary>
+    /// <param name="dbContext">The context holding the open import transaction.</param>
+    /// <param name="cancellationToken">A cancellation token.</param>
+    /// <returns>A <see cref="Task"/> representing the asynchronous operation.</returns>
+    /// <remarks>
+    /// Rows imported with explicit primary keys do not advance the generators backing those keys, so
+    /// on PostgreSQL the next insert collides with an imported row. Implementations must do their
+    /// work through the supplied context so that a failure rolls the import back.
+    /// </remarks>
+    Task CompleteDatabaseRestoreAsync(JellyfinDbContext dbContext, CancellationToken cancellationToken) => Task.CompletedTask;
 }

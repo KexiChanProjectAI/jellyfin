@@ -22,4 +22,13 @@ public class DatabaseConfigurationOptions
     /// Defaults to "NoLock".
     /// </summary>
     public DatabaseLockingBehaviorTypes LockingBehavior { get; set; }
+
+    /// <summary>
+    /// Gets or sets the settings for the built in PostgreSQL provider.
+    /// </summary>
+    /// <remarks>
+    /// Absent from configurations written before PostgreSQL support existed, and absent on any
+    /// install that does not use it, so it stays optional.
+    /// </remarks>
+    public PostgresDatabaseOptions? PostgreSql { get; set; }
 }

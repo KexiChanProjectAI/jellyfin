@@ -11,17 +11,22 @@ public class CustomDatabaseOptions
     /// <summary>
     /// Gets or sets the Plugin name to search for database providers.
     /// </summary>
-    public required string PluginName { get; set; }
+    /// <remarks>
+    /// Only meaningful for <c>PLUGIN_PROVIDER</c>. A built in provider reading its settings from this
+    /// section leaves it empty, and deserialising a configuration that omits it yields null, so this
+    /// cannot be required.
+    /// </remarks>
+    public string? PluginName { get; set; }
 
     /// <summary>
     /// Gets or sets the plugin assembly to search for providers.
     /// </summary>
-    public required string PluginAssembly { get; set; }
+    public string? PluginAssembly { get; set; }
 
     /// <summary>
     /// Gets or sets the connection string for the custom database provider.
     /// </summary>
-    public required string ConnectionString { get; set; }
+    public string? ConnectionString { get; set; }
 
     /// <summary>
     /// Gets or sets the list of extra options for the custom provider.

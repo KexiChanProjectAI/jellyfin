@@ -1,7 +1,7 @@
 using System;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
-namespace Jellyfin.Database.Providers.Sqlite.ValueConverters
+namespace Jellyfin.Database.Implementations.ValueConverters
 {
     /// <summary>
     /// ValueConverter to specify kind.

@@ -1,9 +1,9 @@
 using System;
-using Jellyfin.Database.Providers.Sqlite.ValueConverters;
+using Jellyfin.Database.Implementations.ValueConverters;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
-namespace Jellyfin.Database.Providers.Sqlite;
+namespace Jellyfin.Database.Implementations;
 
 /// <summary>
 /// Model builder extensions.
