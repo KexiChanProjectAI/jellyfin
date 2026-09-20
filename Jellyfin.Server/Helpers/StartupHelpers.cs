@@ -44,9 +44,12 @@ public static class StartupHelpers
         var relevantEnvVars = new Dictionary<object, object>();
         foreach (var key in allEnvVars.Keys)
         {
-            if (_relevantEnvVarPrefixes.Any(prefix => key.ToString()!.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
+            var name = key.ToString()!;
+            if (_relevantEnvVarPrefixes.Any(prefix => name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
             {
-                relevantEnvVars.Add(key, allEnvVars[key]!);
+                // This log goes into bug reports, and the database password is supplied through one
+                // of these variables.
+                relevantEnvVars.Add(key, IsSecret(name) ? "***" : allEnvVars[key]!);
             }
         }
 
@@ -65,6 +68,19 @@ public static class StartupHelpers
         logger.LogInformation("Web resources path: {WebPath}", appPaths.WebPath);
         logger.LogInformation("Application directory: {ApplicationPath}", appPaths.ProgramSystemPath);
     }
+
+    /// <summary>
+    /// Reports whether an environment variable holds a secret and must not be logged.
+    /// </summary>
+    /// <param name="name">The name of the variable.</param>
+    /// <returns>True when the value has to be hidden.</returns>
+    private static bool IsSecret(string name)
+        => name.Contains("PASSWORD", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("SECRET", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("TOKEN", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("APIKEY", StringComparison.OrdinalIgnoreCase)
+            // A connection string carries the password inline.
+            || name.Contains("CONNECTION", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Create the data, config and log paths from the variety of inputs(command line args,
